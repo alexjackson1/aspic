@@ -1,131 +1,18 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ops::Deref,
 };
 
-use petgraph::{algo::is_cyclic_directed, graph::DiGraph};
+use petgraph::algo::is_cyclic_directed;
 
 use crate::{
-    fw::ArgumentationFramework,
-    lang::{Contrary, ContraryOperator, Formula, Identifier, Preference, PreferenceOperator},
-    AspicError, SystemDescription,
+    fw::{ArgumentId, ArgumentationFramework, StructuredArgument, VariableMap},
+    parse::{
+        ContraryRelation, Formula, Identifier, InferenceRule, Knowledge, PreferenceRelation,
+        RuleLabel, SystemDescription,
+    },
+    AspicError,
 };
-
-#[derive(Clone, Eq, PartialEq, Debug, Hash)]
-pub enum Knowledge {
-    Premise(Formula),
-    Axiom(Formula),
-}
-
-impl Deref for Knowledge {
-    type Target = Formula;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Knowledge::Premise(f) => f,
-            Knowledge::Axiom(f) => f,
-        }
-    }
-}
-
-#[derive(PartialEq, Eq, Clone, Hash, PartialOrd, Ord, Debug)]
-pub struct RuleLabel(pub Identifier);
-
-#[derive(PartialEq, Eq, Clone, Hash, Copy, Debug)]
-pub enum InferenceKind {
-    Strict,
-    Defeasible,
-}
-
-#[derive(PartialEq, Eq, Clone, Hash, Debug)]
-pub struct InferenceRule {
-    pub label: RuleLabel,
-    pub antecedents: Vec<Formula>,
-    pub consequent: Formula,
-    pub kind: InferenceKind,
-}
-
-impl InferenceRule {
-    pub fn new(
-        label: RuleLabel,
-        antecedents: Vec<Formula>,
-        consequent: Formula,
-        kind: InferenceKind,
-    ) -> Self {
-        Self {
-            label,
-            antecedents,
-            consequent,
-            kind,
-        }
-    }
-
-    pub fn is_defeasible(&self) -> bool {
-        self.kind == InferenceKind::Defeasible
-    }
-
-    pub fn has_variables(&self) -> bool {
-        self.antecedents.iter().any(|a| a.has_variables()) || self.consequent.has_variables()
-    }
-}
-
-pub type PreferenceRelation<T> = DiGraph<T, ()>;
-pub type ContraryRelation = DiGraph<Formula, ()>;
-
-pub fn build_preference_graph<T>(prefs: Vec<Preference<T>>) -> PreferenceRelation<T>
-where
-    T: Eq + Clone + std::hash::Hash,
-{
-    let mut graph = PreferenceRelation::new();
-    let mut indices = HashMap::new();
-    for pref in prefs.into_iter() {
-        let left = indices
-            .entry(pref.left.clone())
-            .or_insert_with(|| graph.add_node(pref.left.clone()))
-            .clone();
-        let right = indices
-            .entry(pref.right.clone())
-            .or_insert_with(|| graph.add_node(pref.right.clone()))
-            .clone();
-
-        match pref.operator {
-            PreferenceOperator::Succeeds => {
-                graph.add_edge(left, right, ());
-            }
-            PreferenceOperator::Precedes => {
-                graph.add_edge(right, left, ());
-            }
-        }
-    }
-    graph
-}
-
-pub fn build_contrary_graph(contraries: Vec<Contrary>) -> ContraryRelation {
-    let mut graph = ContraryRelation::new();
-    let mut indices = HashMap::new();
-    for contrary in contraries.into_iter() {
-        // handle case where formula already exists in graph
-        let left = indices
-            .entry(contrary.left.clone())
-            .or_insert_with(|| graph.add_node(contrary.left.clone()))
-            .clone();
-        let right = indices
-            .entry(contrary.right.clone())
-            .or_insert_with(|| graph.add_node(contrary.right.clone()))
-            .clone();
-
-        match contrary.operator {
-            ContraryOperator::Contradiction => {
-                graph.add_edge(left, right, ());
-                graph.add_edge(right, left, ());
-            }
-            ContraryOperator::Contrary => {
-                graph.add_edge(left, right, ());
-            }
-        }
-    }
-    graph
-}
 
 #[derive(Debug, Default)]
 pub struct Language {
@@ -240,8 +127,166 @@ impl TryFrom<SystemDescription> for Theory {
 
 impl Theory {
     pub fn generate_arguments(&self) -> Result<ArgumentationFramework, AspicError> {
-        let framework = ArgumentationFramework::default();
+        let mut framework = ArgumentationFramework::default();
+
+        self.knowledge
+            .iter()
+            .enumerate()
+            .map(|(i, k)| StructuredArgument::atomic(ArgumentId(i + 1), k.deref().clone()))
+            .for_each(|arg| framework.add_argument(arg));
+
+        let mut next_id = framework.len() + 1;
+        for inference_rule in self.system.inference_rules.iter() {
+            if let Some(satisfier_list) = framework.can_instantiate(inference_rule) {
+                // Iterate over all possible satisfiers of the antecedents
+                let (args, new_count) = self.iterate_combinations(
+                    &mut framework,
+                    inference_rule,
+                    satisfier_list,
+                    next_id.into(),
+                );
+
+                // // Add the new arguments to the set of all arguments if they are unique
+                // for argument in args.into_iter() {
+                //     if !arguments.contains(&argument) {
+                //         new_arguments.insert(argument);
+                //     }
+                // }
+
+                // next_id = new_count;
+            }
+        }
 
         Ok(framework)
     }
+
+    fn iterate_combinations<'t>(
+        &'t self,
+        framework: &mut ArgumentationFramework,
+        rule: &InferenceRule,
+        satisfier_list: Vec<BTreeMap<ArgumentId, VariableMap>>,
+        init_id: ArgumentId,
+    ) -> (Vec<StructuredArgument>, ArgumentId) {
+        let mut current_id = init_id;
+        let mut derived_arguments = Vec::new();
+
+        // Iterate over all possible combinations of arguments that satisfy the antecedents
+        for combination in all_combinations(satisfier_list) {
+            if let Some((arg_ids, harmonised)) = self.harmonise_assignments(combination) {
+                let inference = self.instantiate_inference(rule, &harmonised);
+                let sub_args = arg_ids.into_iter().map(|id| {
+                    framework
+                        .get_argument(id)
+                        .expect("Argument not found")
+                        .clone()
+                });
+                let argument = StructuredArgument::inferred(current_id, sub_args, inference);
+
+                if !framework.contains(&argument) {
+                    framework.add_argument(argument.clone());
+                    derived_arguments.push(argument);
+                    current_id = ArgumentId(current_id.0 + 1)
+                }
+
+                // TODO: Probably better to implement trait Add* etc. for ArgumentId
+            }
+        }
+
+        (derived_arguments, current_id)
+    }
+
+    fn harmonise_assignments(
+        &self,
+        combination: Vec<Satisfier>,
+    ) -> Option<(Vec<ArgumentId>, VariableMap)> {
+        let mut arg_ids = Vec::new();
+        let mut harmonised = HashMap::new();
+
+        for Satisfier(arg_id, variable_map) in combination.into_iter() {
+            arg_ids.push(arg_id);
+
+            for (variable, value) in variable_map.iter() {
+                if let Some(other_value) = harmonised.get(variable) {
+                    if value != other_value {
+                        return None;
+                    }
+                }
+
+                harmonised.insert(variable.clone(), value.clone());
+            }
+        }
+
+        Some((arg_ids, harmonised))
+    }
+
+    fn instantiate_inference(
+        &self,
+        rule: &InferenceRule,
+        harmonised: &VariableMap,
+    ) -> InferenceRule {
+        let mut inference = rule.clone();
+
+        if !inference.has_variables() {
+            return inference;
+        }
+
+        for ant in inference.antecedents.iter_mut() {
+            match ant {
+                Formula::Predicate(p) if p.has_variables() => {
+                    let mut terms = p.terms.clone();
+                    for (i, term) in p.terms.iter().enumerate() {
+                        if let Some(value) = harmonised.get(&term) {
+                            terms[i] = value.clone();
+                        }
+                    }
+
+                    p.terms = terms;
+                }
+                _ => {}
+            }
+        }
+
+        if let Formula::Predicate(p) = &mut inference.consequent {
+            let mut terms = p.terms.clone();
+            for (i, term) in p.terms.iter_mut().enumerate() {
+                if let Some(value) = harmonised.get(&term) {
+                    terms[i] = value.clone();
+                }
+            }
+
+            p.terms = terms;
+        }
+
+        inference
+    }
+}
+
+#[derive(Clone)]
+struct Satisfier(ArgumentId, VariableMap);
+
+fn all_combinations<'t>(
+    satisifier_list: Vec<BTreeMap<ArgumentId, VariableMap>>,
+) -> Vec<Vec<Satisfier>> {
+    let total = satisifier_list.iter().map(|v| v.len()).product();
+    let mut combinations = Vec::with_capacity(total);
+
+    for num in 0..total {
+        let mut combination = Vec::new();
+        let mut current_num = num;
+
+        for map in satisifier_list.iter() {
+            let satisfiers = map
+                .into_iter()
+                .map(|(x, y)| Satisfier(*x, y.clone()))
+                .collect::<Vec<Satisfier>>();
+
+            let index = current_num % satisfiers.len();
+            combination.push(satisfiers[index].clone());
+            current_num /= satisfiers.len();
+        }
+
+        combinations.push(combination);
+    }
+
+    combinations
 }

@@ -1,13 +1,11 @@
 mod core;
 mod fw;
-pub mod lang;
+pub mod parse;
 
 extern crate thiserror;
 
-use core::{ContraryRelation, InferenceRule, Knowledge, PreferenceRelation, RuleLabel};
-
 use fw::ArgumentationFramework;
-use lang::Formula;
+use parse::SystemDescription;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -20,56 +18,6 @@ pub enum AspicError {
 
     #[error("Error: {0}")]
     Custom(String),
-}
-
-#[derive(Debug, Default)]
-pub struct SystemDescription {
-    pub axioms: Vec<Knowledge>,
-    pub premises: Vec<Knowledge>,
-    pub knowledge_preferences: PreferenceRelation<Formula>,
-    pub rules: Vec<InferenceRule>,
-    pub rule_preferences: PreferenceRelation<RuleLabel>,
-    pub contraries: ContraryRelation,
-}
-
-impl SystemDescription {
-    pub fn parse<'a>(
-        axioms: &'a str,
-        premises: &'a str,
-        know_prefs: &'a str,
-        rules: &'a str,
-        rule_prefs: &'a str,
-        contraries: &'a str,
-    ) -> Result<Self, AspicError> {
-        let axioms: Vec<Knowledge> = lang::formula_set(axioms)
-            .map(|fs| fs.into_iter().map(Knowledge::Axiom).collect())
-            .map_err(|e| AspicError::Parsing(e.to_owned()))?;
-        let premises: Vec<Knowledge> = lang::formula_set(premises)
-            .map(|fs| fs.into_iter().map(Knowledge::Premise).collect())
-            .map_err(|e| AspicError::Parsing(e.to_owned()))?;
-
-        let knowledge_preferences = lang::knowledge_preferences(know_prefs)
-            .map(|prefs| core::build_preference_graph(prefs))
-            .map_err(|e| AspicError::Parsing(e.to_owned()))?;
-
-        let contraries = lang::contraries(contraries)
-            .map(|cs| core::build_contrary_graph(cs))
-            .map_err(|e| AspicError::Parsing(e.to_owned()))?;
-
-        let rules = lang::inference_rules(rules).map_err(|e| AspicError::Parsing(e.to_owned()))?;
-        let rule_preferences = lang::rule_preferences(rule_prefs)
-            .map(|prefs| core::build_preference_graph(prefs))
-            .map_err(|e| AspicError::Parsing(e.to_owned()))?;
-
-        Ok(Self {
-            axioms,
-            premises,
-            knowledge_preferences,
-            rules,
-            rule_preferences,
-            contraries,
-        })
-    }
 }
 
 pub fn generate_af(description: SystemDescription) -> Result<ArgumentationFramework, AspicError> {
