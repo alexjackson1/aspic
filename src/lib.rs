@@ -1,11 +1,10 @@
-mod core;
-pub mod parse;
-
-extern crate thiserror;
-
-use core::{ArgumentationFramework, StructuredArgument};
-use parse::SystemDescription;
 use thiserror::Error;
+
+mod core;
+mod parse;
+
+pub use core::{ArgumentationFramework, StructuredArgument};
+pub use parse::SystemDescription;
 
 #[derive(Error, Debug)]
 pub enum AspicError {

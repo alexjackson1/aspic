@@ -1,10 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fmt,
     ops::Deref,
 };
 
-use petgraph::{algo::is_cyclic_directed, prelude::*};
+use petgraph::algo::is_cyclic_directed;
+
+mod fw;
 
 use crate::{
     parse::{
@@ -14,34 +15,14 @@ use crate::{
     AspicError,
 };
 
-/// A unique identifier for an argument.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ArgumentId(pub usize);
+pub use fw::{Argument, ArgumentId, ArgumentationFramework};
 
-impl fmt::Display for ArgumentId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "A{}", self.0)
-    }
+/// An abstract representation of an argument.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AbstractArgument {
+    pub id: ArgumentId,
 }
 
-impl From<usize> for ArgumentId {
-    fn from(id: usize) -> Self {
-        Self(id)
-    }
-}
-
-impl From<ArgumentId> for usize {
-    fn from(id: ArgumentId) -> Self {
-        id.0
-    }
-}
-
-/// A trait for arguments.
-pub trait Argument {
-    fn id(&self) -> ArgumentId;
-}
-
-// Macro to implement the `Argument` trait for a type.
 macro_rules! impl_argument {
     ($type:ty) => {
         impl Argument for $type {
@@ -50,12 +31,6 @@ macro_rules! impl_argument {
             }
         }
     };
-}
-
-/// An abstract representation of an argument.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct AbstractArgument {
-    pub id: ArgumentId,
 }
 
 impl_argument!(AbstractArgument);
@@ -115,28 +90,24 @@ impl StructuredArgument {
     pub fn atomic(id: ArgumentId, formula: Formula) -> Self {
         Self {
             id,
-            premises: HashSet::new(),
-            sub_args: HashSet::new(),
+            premises: HashSet::from([formula.clone()]),
+            sub_args: HashSet::from([id]),
             conclusion: formula,
             inferences: HashSet::new(),
             top_rule: None,
         }
     }
 
-    pub fn inferred<Arg, I>(id: ArgumentId, __sub_args: I, inference: InferenceRule) -> Self
+    pub fn inferred<Arg, I>(id: ArgumentId, arg_iter: I, inference: InferenceRule) -> Self
     where
         Arg: Argument + Structured + Clone,
         I: Iterator<Item = Arg> + Clone,
     {
-        let premises = __sub_args
-            .clone()
-            .map(|sa| sa.premises())
-            .flatten()
-            .collect();
-        let sub_args = __sub_args.clone().map(|sa| sa.id()).collect();
+        let premises = arg_iter.clone().map(|sa| sa.premises()).flatten().collect();
+        let sub_args = arg_iter.clone().map(|sa| sa.id()).collect();
         let top_rule = Some(inference.label.clone());
         let conclusion = inference.consequent.clone();
-        let inferences = __sub_args
+        let inferences = arg_iter
             .map(|sa| sa.all_inferences())
             .flatten()
             .chain(Some(inference))
@@ -151,49 +122,40 @@ impl StructuredArgument {
             top_rule,
         }
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct ArgumentationFramework<Arg>
-where
-    Arg: Argument,
-{
-    graph: DiGraph<Arg, ()>,
-    indices: HashMap<ArgumentId, NodeIndex>,
-}
-
-impl Default for ArgumentationFramework<StructuredArgument> {
-    fn default() -> Self {
-        Self {
-            graph: DiGraph::new(),
-            indices: HashMap::new(),
-        }
+    pub fn find_inference(&self, rule_label: &RuleLabel) -> Option<&InferenceRule> {
+        self.inferences.iter().find(|i| i.label == *rule_label)
     }
 }
 
 pub type VariableMap = HashMap<Identifier, Identifier>; // Variable -> Term
 
 impl ArgumentationFramework<StructuredArgument> {
+    /// Adds an argument to the framework.
+    ///
+    /// Panics if an argument with the same id already exists.
     pub fn add_argument(&mut self, arg: StructuredArgument) {
-        let id = arg.id();
-        let idx = self.graph.add_node(arg);
-        self.indices.insert(id, idx);
+        let id = arg.id;
+        if let Some(existing) = self.arguments.insert(id, arg) {
+            panic!("Argument with id {} already exists", existing.id);
+        }
+
+        self.attacks.add_node(id);
     }
 
+    /// Reurns an optional reference to the argument with the given id.
     pub fn get_argument(&self, id: ArgumentId) -> Option<&StructuredArgument> {
-        self.indices.get(&id).map(|idx| &self.graph[*idx])
+        self.arguments.get(&id)
     }
 
-    pub fn contains(&self, argument: &StructuredArgument) -> bool {
-        self.graph
-            .node_indices()
-            .find(|idx| self.graph[*idx] == *argument)
-            .is_some()
+    /// Returns true if the framework contains an argument with the given id.
+    pub fn contains_id(&self, id: ArgumentId) -> bool {
+        self.arguments.contains_key(&id)
     }
 
-    // TODO: Probably better to implement trait
-    pub fn len(&self) -> usize {
-        self.graph.node_count()
+    /// Returns true if the framework contains the given argument ignoring id.
+    pub fn contains_argument(&self, arg: &StructuredArgument) -> bool {
+        self.arguments.values().any(|a| a == arg)
     }
 
     /// Finds all arguments that satisfy the antecedents of the inference rule.
@@ -222,17 +184,10 @@ impl ArgumentationFramework<StructuredArgument> {
     ) -> BTreeMap<ArgumentId, VariableMap> {
         let mut antecedent_satisfiers = BTreeMap::new();
 
-        for arg_idx in self.graph.node_indices() {
-            match &self.graph[arg_idx] {
+        for arg_id in self.arguments.keys() {
+            match &self.arguments[arg_id] {
                 // Skip arguments constructed using this rule
-                a if a
-                    .inferences
-                    .iter()
-                    .find(|i| i.is_defeasible() && i.label == rule.label)
-                    .is_some() =>
-                {
-                    continue
-                }
+                a if a.find_inference(&rule.label).is_some() => continue,
                 // Simple case where the antecedent is equal to the argument conclusion
                 a if *antecedent == a.conclusion => {
                     antecedent_satisfiers.insert(a.id, HashMap::new());
@@ -245,6 +200,7 @@ impl ArgumentationFramework<StructuredArgument> {
                             None => None,
                         };
                     }
+                    // TODO: Implement comparison case
                     _ => (),
                 },
             }
@@ -462,10 +418,9 @@ impl Theory {
                 });
                 let argument = StructuredArgument::inferred(current_id, sub_args, inference);
 
-                if !framework.contains(&argument) {
-                    framework.add_argument(argument.clone());
-                    // TODO: Probably better to implement trait Add* etc. for ArgumentId
-                    current_id = ArgumentId(current_id.0 + 1)
+                if !framework.contains_argument(&argument) {
+                    framework.add_argument(argument);
+                    current_id += 1;
                 }
             }
         }
@@ -567,4 +522,164 @@ fn all_combinations<'t>(
     }
 
     combinations
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse::InferenceKind;
+
+    use super::*;
+    #[test]
+    fn test_abstract_argument() {
+        let arg = AbstractArgument { id: ArgumentId(1) };
+        assert_eq!(arg.id(), ArgumentId(1));
+    }
+
+    #[test]
+    fn test_structured_argument_atomic() {
+        let formula = Formula::Proposition("p".into());
+        let arg = StructuredArgument::atomic(ArgumentId(1), formula.clone());
+
+        assert_eq!(arg.id, ArgumentId(1));
+        assert_eq!(arg.conclusion, formula);
+        assert!(arg.premises.contains(&formula));
+        assert!(arg.sub_args.contains(&ArgumentId(1)));
+        assert!(arg.inferences.is_empty());
+        assert!(arg.top_rule.is_none());
+    }
+
+    #[test]
+    fn test_structured_argument_inferred() {
+        let formula1 = Formula::Proposition("p".into());
+        let formula2 = Formula::Proposition("q".into());
+        let rule = InferenceRule {
+            label: RuleLabel("rule1".into()),
+            antecedents: vec![formula1.clone()],
+            consequent: formula2.clone(),
+            kind: InferenceKind::Defeasible,
+        };
+
+        let arg1 = StructuredArgument::atomic(ArgumentId(1), formula1.clone());
+        let args: Vec<StructuredArgument> = vec![arg1.clone()];
+
+        let inferred_arg =
+            StructuredArgument::inferred(ArgumentId(2), args.iter().cloned(), rule.clone());
+
+        assert_eq!(inferred_arg.id, ArgumentId(2));
+        assert_eq!(inferred_arg.conclusion, formula2);
+        assert!(inferred_arg.premises.contains(&formula1));
+        assert!(inferred_arg.sub_args.contains(&ArgumentId(1)));
+        assert!(inferred_arg.inferences.contains(&rule));
+        assert_eq!(inferred_arg.top_rule, Some(rule.label.clone()));
+    }
+
+    #[test]
+    fn test_language_add_formula() {
+        let mut language = Language::default();
+        let formula = Formula::Proposition("p".into());
+
+        language.add_formula(&formula);
+        assert!(language.propositions.contains(&Identifier::from("p")));
+    }
+
+    #[test]
+    fn test_language_from_system_description() {
+        let description = SystemDescription {
+            axioms: vec![Knowledge::Axiom(Formula::Proposition("p".into()))],
+            premises: vec![Knowledge::Premise(Formula::Proposition("q".into()))],
+            rules: vec![],
+            rule_preferences: Default::default(),
+            knowledge_preferences: Default::default(),
+            contraries: Default::default(),
+        };
+
+        let language = Language::from(&description);
+
+        assert!(language.propositions.contains(&Identifier::from("p")));
+        assert!(language.propositions.contains(&Identifier::from("q")));
+    }
+
+    #[test]
+    fn test_theory_try_from() {
+        let description = SystemDescription {
+            axioms: vec![Knowledge::Axiom(Formula::Proposition("p".into()))],
+            premises: vec![Knowledge::Premise(Formula::Proposition("q".into()))],
+            rules: vec![],
+            rule_preferences: Default::default(),
+            knowledge_preferences: Default::default(),
+            contraries: Default::default(),
+        };
+
+        let theory = Theory::try_from(description);
+
+        assert!(theory.is_ok());
+        let theory = theory.unwrap();
+        assert_eq!(theory.knowledge.len(), 2);
+    }
+
+    #[test]
+    fn test_argumentation_framework_add_argument() {
+        let mut framework = ArgumentationFramework::default();
+        let arg = StructuredArgument::atomic(ArgumentId(1), Formula::Proposition("p".into()));
+
+        framework.add_argument(arg.clone());
+        assert_eq!(framework.len(), 1);
+        assert_eq!(framework.get_argument(ArgumentId(1)), Some(&arg));
+    }
+
+    #[test]
+    fn test_argumentation_framework_contains_id() {
+        let mut framework = ArgumentationFramework::default();
+        let arg = StructuredArgument::atomic(ArgumentId(1), Formula::Proposition("p".into()));
+
+        framework.add_argument(arg.clone());
+        assert!(framework.contains_id(ArgumentId(1)));
+        assert!(!framework.contains_id(ArgumentId(2)));
+    }
+
+    #[test]
+    fn test_argumentation_framework_contains_argument() {
+        let mut framework = ArgumentationFramework::default();
+        let arg = StructuredArgument::atomic(ArgumentId(1), Formula::Proposition("p".into()));
+
+        framework.add_argument(arg.clone());
+        assert!(framework.contains_argument(&arg));
+    }
+
+    #[test]
+    fn test_find_predicate_assignment() {
+        let p1 = Predicate {
+            name: "P".into(),
+            terms: vec![Identifier("X".into())],
+        };
+        let p2 = Predicate {
+            name: "P".into(),
+            terms: vec![Identifier("a".into())],
+        };
+
+        let assignment = find_predicate_assignment(&p1, &p2);
+        assert!(assignment.is_some());
+        let map = assignment.unwrap();
+        assert_eq!(
+            map.get(&Identifier("X".into())),
+            Some(&Identifier("a".into()))
+        );
+    }
+
+    #[test]
+    fn test_arg_framework() {
+        let mut framework = ArgumentationFramework::default();
+        let arg1 = StructuredArgument::atomic(ArgumentId(1), Formula::Proposition("p".into()));
+        let arg2 = StructuredArgument::atomic(ArgumentId(2), Formula::Proposition("q".into()));
+        let arg3 = StructuredArgument::atomic(ArgumentId(3), Formula::Proposition("r".into()));
+
+        framework.add_argument(arg1.clone());
+        framework.add_argument(arg2.clone());
+        framework.add_argument(arg3.clone());
+
+        assert_eq!(framework.len(), 3);
+        assert_eq!(framework.get_argument(ArgumentId(1)), Some(&arg1));
+        assert_eq!(framework.get_argument(ArgumentId(2)), Some(&arg2));
+        assert_eq!(framework.get_argument(ArgumentId(3)), Some(&arg3));
+    }
 }
