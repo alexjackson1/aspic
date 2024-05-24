@@ -1,10 +1,9 @@
 mod core;
-mod fw;
 pub mod parse;
 
 extern crate thiserror;
 
-use fw::ArgumentationFramework;
+use core::{ArgumentationFramework, StructuredArgument};
 use parse::SystemDescription;
 use thiserror::Error;
 
@@ -20,7 +19,9 @@ pub enum AspicError {
     Custom(String),
 }
 
-pub fn generate_af(description: SystemDescription) -> Result<ArgumentationFramework, AspicError> {
+pub fn generate_af(
+    description: SystemDescription,
+) -> Result<ArgumentationFramework<StructuredArgument>, AspicError> {
     let theory = core::Theory::try_from(description)?;
     let framework = theory.generate_arguments()?;
     Ok(framework)

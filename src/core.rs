@@ -1,26 +1,312 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt,
     ops::Deref,
 };
 
-use petgraph::algo::is_cyclic_directed;
+use petgraph::{algo::is_cyclic_directed, prelude::*};
 
 use crate::{
-    fw::{ArgumentId, ArgumentationFramework, StructuredArgument, VariableMap},
     parse::{
-        ContraryRelation, Formula, Identifier, InferenceRule, Knowledge, PreferenceRelation,
-        RuleLabel, SystemDescription,
+        ContraryRelation, Formula, Identifier, InferenceRule, Knowledge, Predicate,
+        PreferenceRelation, RuleLabel, SystemDescription,
     },
     AspicError,
 };
 
+/// A unique identifier for an argument.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ArgumentId(pub usize);
+
+impl fmt::Display for ArgumentId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "A{}", self.0)
+    }
+}
+
+impl From<usize> for ArgumentId {
+    fn from(id: usize) -> Self {
+        Self(id)
+    }
+}
+
+impl From<ArgumentId> for usize {
+    fn from(id: ArgumentId) -> Self {
+        id.0
+    }
+}
+
+/// A trait for arguments.
+pub trait Argument {
+    fn id(&self) -> ArgumentId;
+}
+
+// Macro to implement the `Argument` trait for a type.
+macro_rules! impl_argument {
+    ($type:ty) => {
+        impl Argument for $type {
+            fn id(&self) -> ArgumentId {
+                self.id
+            }
+        }
+    };
+}
+
+/// An abstract representation of an argument.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AbstractArgument {
+    pub id: ArgumentId,
+}
+
+impl_argument!(AbstractArgument);
+
+/// A trait for structured arguments.
+pub trait Structured {
+    fn sub_arguments(&self) -> HashSet<ArgumentId>;
+    fn inference(&self) -> Option<&InferenceRule>;
+    fn all_inferences(&self) -> HashSet<InferenceRule>;
+    fn premises(&self) -> HashSet<Formula>;
+}
+
+#[derive(Debug, Clone)]
+pub struct StructuredArgument {
+    pub id: ArgumentId,
+    pub sub_args: HashSet<ArgumentId>,
+    pub premises: HashSet<Formula>,
+    pub conclusion: Formula,
+    pub inferences: HashSet<InferenceRule>,
+    pub top_rule: Option<RuleLabel>,
+}
+
+impl Eq for StructuredArgument {}
+impl PartialEq for StructuredArgument {
+    fn eq(&self, other: &Self) -> bool {
+        self.premises == other.premises
+            && self.sub_args == other.sub_args
+            && self.conclusion == other.conclusion
+            && self.inferences == other.inferences
+            && self.top_rule == other.top_rule
+    }
+}
+
+impl_argument!(StructuredArgument);
+
+impl Structured for StructuredArgument {
+    fn sub_arguments(&self) -> HashSet<ArgumentId> {
+        self.sub_args.clone()
+    }
+
+    fn inference(&self) -> Option<&InferenceRule> {
+        self.top_rule
+            .as_ref()
+            .and_then(|rule| self.inferences.iter().find(|r| r.label == *rule))
+    }
+
+    fn all_inferences(&self) -> HashSet<InferenceRule> {
+        self.inferences.clone()
+    }
+
+    fn premises(&self) -> HashSet<Formula> {
+        self.premises.clone()
+    }
+}
+
+impl StructuredArgument {
+    pub fn atomic(id: ArgumentId, formula: Formula) -> Self {
+        Self {
+            id,
+            premises: HashSet::new(),
+            sub_args: HashSet::new(),
+            conclusion: formula,
+            inferences: HashSet::new(),
+            top_rule: None,
+        }
+    }
+
+    pub fn inferred<Arg, I>(id: ArgumentId, __sub_args: I, inference: InferenceRule) -> Self
+    where
+        Arg: Argument + Structured + Clone,
+        I: Iterator<Item = Arg> + Clone,
+    {
+        let premises = __sub_args
+            .clone()
+            .map(|sa| sa.premises())
+            .flatten()
+            .collect();
+        let sub_args = __sub_args.clone().map(|sa| sa.id()).collect();
+        let top_rule = Some(inference.label.clone());
+        let conclusion = inference.consequent.clone();
+        let inferences = __sub_args
+            .map(|sa| sa.all_inferences())
+            .flatten()
+            .chain(Some(inference))
+            .collect();
+
+        Self {
+            id,
+            premises,
+            sub_args,
+            conclusion,
+            inferences,
+            top_rule,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ArgumentationFramework<Arg>
+where
+    Arg: Argument,
+{
+    graph: DiGraph<Arg, ()>,
+    indices: HashMap<ArgumentId, NodeIndex>,
+}
+
+impl Default for ArgumentationFramework<StructuredArgument> {
+    fn default() -> Self {
+        Self {
+            graph: DiGraph::new(),
+            indices: HashMap::new(),
+        }
+    }
+}
+
+pub type VariableMap = HashMap<Identifier, Identifier>; // Variable -> Term
+
+impl ArgumentationFramework<StructuredArgument> {
+    pub fn add_argument(&mut self, arg: StructuredArgument) {
+        let id = arg.id();
+        let idx = self.graph.add_node(arg);
+        self.indices.insert(id, idx);
+    }
+
+    pub fn get_argument(&self, id: ArgumentId) -> Option<&StructuredArgument> {
+        self.indices.get(&id).map(|idx| &self.graph[*idx])
+    }
+
+    pub fn contains(&self, argument: &StructuredArgument) -> bool {
+        self.graph
+            .node_indices()
+            .find(|idx| self.graph[*idx] == *argument)
+            .is_some()
+    }
+
+    // TODO: Probably better to implement trait
+    pub fn len(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// Finds all arguments that satisfy the antecedents of the inference rule.
+    pub fn has_satisifers(
+        &self,
+        rule: &InferenceRule,
+    ) -> Option<Vec<BTreeMap<ArgumentId, VariableMap>>> {
+        let mut satisfiers = Vec::new();
+
+        for antecedent in rule.antecedents.iter().cloned() {
+            let res = self.find_satisfiers(rule, &antecedent);
+            match (!res.is_empty()).then_some(res) {
+                Some(satisfier) => satisfiers.push(satisfier),
+                None => return None,
+            }
+        }
+
+        Some(satisfiers)
+    }
+
+    /// Finds all arguments that satisfy the antecedent.
+    fn find_satisfiers<'a>(
+        &self,
+        rule: &InferenceRule,
+        antecedent: &Formula,
+    ) -> BTreeMap<ArgumentId, VariableMap> {
+        let mut antecedent_satisfiers = BTreeMap::new();
+
+        for arg_idx in self.graph.node_indices() {
+            match &self.graph[arg_idx] {
+                // Skip arguments constructed using this rule
+                a if a
+                    .inferences
+                    .iter()
+                    .find(|i| i.is_defeasible() && i.label == rule.label)
+                    .is_some() =>
+                {
+                    continue
+                }
+                // Simple case where the antecedent is equal to the argument conclusion
+                a if *antecedent == a.conclusion => {
+                    antecedent_satisfiers.insert(a.id, HashMap::new());
+                }
+                // Check if the antecedent is a predicate and the argument conclusion is a predicate
+                a => match (antecedent, &a.conclusion) {
+                    (Formula::Predicate(a_pred), Formula::Predicate(c_pred)) => {
+                        match find_predicate_assignment(&a_pred, c_pred) {
+                            Some(additional) => antecedent_satisfiers.insert(a.id, additional),
+                            None => None,
+                        };
+                    }
+                    _ => (),
+                },
+            }
+        }
+
+        antecedent_satisfiers
+    }
+}
+
+/// Finds a valid assignment for two corresponding predicates.
+fn find_predicate_assignment<'a>(p1: &'a Predicate, p2: &'a Predicate) -> Option<VariableMap> {
+    let mut additional_assignments = HashMap::new();
+    match (p1, p2) {
+        // If the predicates are not equal, they cannot be satisfied
+        (p1, p2) if p1.name != p2.name || p1.terms.len() != p2.terms.len() => None,
+        // If the predicates are equal, check if the terms can be assigned
+        (p1, p2) => {
+            for (term_1, term_2) in p1.terms.iter().zip(p2.terms.iter()) {
+                match find_term_assignment(term_1, term_2, &additional_assignments) {
+                    Some(None) => continue,
+                    Some(Some((var, term))) => {
+                        additional_assignments.insert(var, term);
+                    }
+                    None => return None,
+                }
+            }
+            Some(additional_assignments)
+        }
+    }
+}
+
+/// Finds a valid assignment for two corresponding terms.
+///
+/// The outer `Option` represents whether the two terms are compatible, and
+/// the inner `Option` optionally contains a required variable assignment.
+fn find_term_assignment<'a>(
+    term_1: &'a Identifier,
+    term_2: &'a Identifier,
+    assignments: &VariableMap,
+) -> Option<Option<(Identifier, Identifier)>> {
+    match term_1 {
+        // If the terms are equal, no assignment is required
+        term_1 if term_1 == term_2 => Some(None),
+        // If the first term is a variable, check if it has been assigned
+        term_1 if term_1.is_variable() => match assignments.get(term_1) {
+            // If the variable has been assigned, check if the assignment is valid
+            Some(assigned) if assigned == term_2 => Some(None),
+            Some(_) => None,
+            // If the variable has not been assigned, assign it
+            None => Some(Some((term_1.clone(), term_2.clone()))),
+        },
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Language {
-    pub terms: BTreeSet<Identifier>,
-    pub variables: BTreeSet<Identifier>,
-    pub predicates: BTreeSet<Identifier>,
-    pub propositions: BTreeSet<Identifier>,
-    pub labels: BTreeSet<RuleLabel>,
+    pub terms: HashSet<Identifier>,
+    pub variables: HashSet<Identifier>,
+    pub predicates: HashSet<Identifier>,
+    pub propositions: HashSet<Identifier>,
+    pub labels: HashSet<RuleLabel>,
 }
 
 impl Language {
@@ -126,7 +412,9 @@ impl TryFrom<SystemDescription> for Theory {
 }
 
 impl Theory {
-    pub fn generate_arguments(&self) -> Result<ArgumentationFramework, AspicError> {
+    pub fn generate_arguments(
+        &self,
+    ) -> Result<ArgumentationFramework<StructuredArgument>, AspicError> {
         let mut framework = ArgumentationFramework::default();
 
         self.knowledge
@@ -135,25 +423,18 @@ impl Theory {
             .map(|(i, k)| StructuredArgument::atomic(ArgumentId(i + 1), k.deref().clone()))
             .for_each(|arg| framework.add_argument(arg));
 
-        let mut next_id = framework.len() + 1;
-        for inference_rule in self.system.inference_rules.iter() {
-            if let Some(satisfier_list) = framework.can_instantiate(inference_rule) {
-                // Iterate over all possible satisfiers of the antecedents
-                let (args, new_count) = self.iterate_combinations(
-                    &mut framework,
-                    inference_rule,
-                    satisfier_list,
-                    next_id.into(),
-                );
+        let mut next_id = ArgumentId(framework.len() + 1);
 
-                // // Add the new arguments to the set of all arguments if they are unique
-                // for argument in args.into_iter() {
-                //     if !arguments.contains(&argument) {
-                //         new_arguments.insert(argument);
-                //     }
-                // }
+        loop {
+            let start_length = framework.len();
+            for rule in self.system.inference_rules.iter() {
+                if let Some(satisfiers) = framework.has_satisifers(rule) {
+                    next_id = self.iterate_combinations(&mut framework, rule, satisfiers, next_id);
+                }
+            }
 
-                // next_id = new_count;
+            if start_length == framework.len() {
+                break;
             }
         }
 
@@ -162,16 +443,15 @@ impl Theory {
 
     fn iterate_combinations<'t>(
         &'t self,
-        framework: &mut ArgumentationFramework,
+        framework: &mut ArgumentationFramework<StructuredArgument>,
         rule: &InferenceRule,
-        satisfier_list: Vec<BTreeMap<ArgumentId, VariableMap>>,
-        init_id: ArgumentId,
-    ) -> (Vec<StructuredArgument>, ArgumentId) {
-        let mut current_id = init_id;
-        let mut derived_arguments = Vec::new();
+        satisfiers: Vec<BTreeMap<ArgumentId, VariableMap>>,
+        next_id: ArgumentId,
+    ) -> ArgumentId {
+        let mut current_id = next_id;
 
         // Iterate over all possible combinations of arguments that satisfy the antecedents
-        for combination in all_combinations(satisfier_list) {
+        for combination in all_combinations(satisfiers) {
             if let Some((arg_ids, harmonised)) = self.harmonise_assignments(combination) {
                 let inference = self.instantiate_inference(rule, &harmonised);
                 let sub_args = arg_ids.into_iter().map(|id| {
@@ -184,15 +464,13 @@ impl Theory {
 
                 if !framework.contains(&argument) {
                     framework.add_argument(argument.clone());
-                    derived_arguments.push(argument);
+                    // TODO: Probably better to implement trait Add* etc. for ArgumentId
                     current_id = ArgumentId(current_id.0 + 1)
                 }
-
-                // TODO: Probably better to implement trait Add* etc. for ArgumentId
             }
         }
 
-        (derived_arguments, current_id)
+        current_id
     }
 
     fn harmonise_assignments(
