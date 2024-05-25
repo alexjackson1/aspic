@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{collections::HashMap, hash, ops::Deref};
+use std::{
+    collections::{HashMap, HashSet},
+    hash,
+    ops::{Deref, DerefMut},
+};
 
 use nom::{
     branch::alt,
@@ -11,21 +15,61 @@ use nom::{
     sequence::delimited,
     IResult,
 };
-use petgraph::graph::DiGraph;
 
 pub type ParsingResult<'a, T> = std::result::Result<T, nom::Err<nom::error::Error<&'a str>>>;
 
-pub type PreferenceRelation<T> = DiGraph<T, ()>;
-pub type ContraryRelation = DiGraph<Formula, ()>;
+#[derive(Debug, Default)]
+pub struct Language {
+    pub terms: HashSet<Identifier>,
+    pub variables: HashSet<Identifier>,
+    pub predicates: HashSet<Identifier>,
+    pub propositions: HashSet<Identifier>,
+    pub labels: HashSet<RuleLabel>,
+}
+
+impl Language {
+    pub fn add_formula(&mut self, formula: &Formula) {
+        match formula {
+            Formula::Proposition(p) => {
+                self.propositions.insert(p.clone());
+            }
+            Formula::Negation(f) => {
+                self.add_formula(f);
+            }
+            Formula::Predicate(p) => {
+                self.predicates.insert(p.name.clone());
+                for ident in p.terms.iter() {
+                    if ident.is_variable() {
+                        self.variables.insert(ident.clone());
+                    } else {
+                        self.terms.insert(ident.clone());
+                    }
+                }
+            }
+            Formula::Comparison(c) => {
+                for ident in vec![&c.left, &c.right] {
+                    if ident.is_variable() {
+                        self.variables.insert((**ident).clone());
+                    } else {
+                        self.terms.insert((**ident).clone());
+                    }
+                }
+            }
+            Formula::RuleLabel(l) => {
+                self.labels.insert(l.clone());
+            }
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct SystemDescription {
     pub axioms: Vec<Knowledge>,
     pub premises: Vec<Knowledge>,
-    pub knowledge_preferences: PreferenceRelation<Formula>,
+    pub knowledge_preferences: Vec<Preference<Formula>>,
     pub rules: Vec<InferenceRule>,
-    pub rule_preferences: PreferenceRelation<RuleLabel>,
-    pub contraries: ContraryRelation,
+    pub rule_preferences: Vec<Preference<RuleLabel>>,
+    pub contraries: Vec<Contrary>,
 }
 
 impl SystemDescription {
@@ -41,14 +85,10 @@ impl SystemDescription {
             formula_set(axioms).map(|fs| fs.into_iter().map(Knowledge::Axiom).collect())?;
         let premises: Vec<Knowledge> =
             formula_set(premises).map(|fs| fs.into_iter().map(Knowledge::Premise).collect())?;
-
-        let know_prefs =
-            knowledge_preferences(know_prefs).map(|prefs| build_preference_graph(prefs))?;
-
-        let cont = contraries(cont).map(|cs| build_contrary_graph(cs))?;
-
+        let know_prefs = knowledge_preferences(know_prefs)?;
+        let cont = contraries(cont)?;
         let rules = inference_rules(rules)?;
-        let rule_prefs = rule_preferences(rule_prefs).map(|prefs| build_preference_graph(prefs))?;
+        let rule_prefs = rule_preferences(rule_prefs)?;
 
         Ok(Self {
             axioms,
@@ -58,6 +98,39 @@ impl SystemDescription {
             rule_preferences: rule_prefs,
             contraries: cont,
         })
+    }
+}
+
+impl From<&SystemDescription> for Language {
+    fn from(description: &SystemDescription) -> Self {
+        let mut language = Language::default();
+
+        for knowledge in description.axioms.iter().chain(description.premises.iter()) {
+            let formula = knowledge.deref();
+            language.add_formula(formula);
+        }
+
+        for rule in description.rules.iter() {
+            if rule.is_defeasible() {
+                language.labels.insert(rule.label.clone());
+            }
+            for antecedent in rule.antecedents.iter() {
+                language.add_formula(antecedent);
+            }
+            language.add_formula(&rule.consequent);
+        }
+
+        for preference in description.knowledge_preferences.iter() {
+            language.add_formula(&preference.left);
+            language.add_formula(&preference.right);
+        }
+
+        for contrary in description.contraries.iter() {
+            language.add_formula(&contrary.left);
+            language.add_formula(&contrary.right);
+        }
+
+        language
     }
 }
 
@@ -216,9 +289,29 @@ impl fmt::Display for RuleLabel {
     }
 }
 
+impl Deref for RuleLabel {
+    type Target = Identifier;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// A parser for a rule label.
 fn rule_label(input: &str) -> IResult<&str, RuleLabel> {
     map(delimited(tag("["), ws(identifier), tag("]")), RuleLabel)(input)
+}
+
+pub trait FormulaLike {
+    fn has_variables(&self) -> bool;
+    fn get_variables(&self) -> Vec<&Identifier>;
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier);
+
+    fn substitute_map(&mut self, map: &HashMap<&Identifier, &Identifier>) {
+        for (variable, term) in map {
+            self.substitute(variable, term);
+        }
+    }
 }
 
 /// A predicate with a name and a list of terms.
@@ -236,9 +329,25 @@ impl Predicate {
     pub fn arity(&self) -> usize {
         self.terms.len()
     }
+}
 
-    pub fn has_variables(&self) -> bool {
+impl FormulaLike for Predicate {
+    fn has_variables(&self) -> bool {
         self.terms.iter().any(|t| t.is_variable())
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        self.terms
+            .iter()
+            .filter(|t| t.is_variable())
+            .collect::<Vec<_>>()
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        self.terms
+            .iter_mut()
+            .filter(|t| **t == *variable)
+            .for_each(|t| *t = term.clone());
     }
 }
 
@@ -298,6 +407,28 @@ impl Comparison {
     }
 }
 
+impl FormulaLike for Comparison {
+    fn has_variables(&self) -> bool {
+        self.left.is_variable() || self.right.is_variable()
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        vec![&*self.left, &*self.right]
+            .into_iter()
+            .filter(|id| id.is_variable())
+            .collect()
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        if *self.left == *variable {
+            self.left = Box::new(term.clone());
+        }
+        if *self.right == *variable {
+            self.right = Box::new(term.clone());
+        }
+    }
+}
+
 impl fmt::Display for Comparison {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} {} {}", self.left, self.operator, self.right)
@@ -352,14 +483,38 @@ pub enum Formula {
     RuleLabel(RuleLabel),
 }
 
-impl Formula {
-    pub fn has_variables(&self) -> bool {
+impl FormulaLike for Formula {
+    fn has_variables(&self) -> bool {
         match self {
             Formula::Proposition(id) => id.is_variable(),
             Formula::Negation(f) => f.has_variables(),
             Formula::Predicate(p) => p.has_variables(),
             Formula::Comparison(c) => c.left.is_variable() || c.right.is_variable(),
             Formula::RuleLabel(_) => false,
+        }
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        match self {
+            Formula::Proposition(_) => Vec::new(),
+            Formula::Negation(f) => f.get_variables(),
+            Formula::Predicate(p) => p.get_variables(),
+            Formula::Comparison(c) => c.get_variables(),
+            Formula::RuleLabel(_) => Vec::new(),
+        }
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        match self {
+            Formula::Proposition(id) => {
+                if *id == *variable {
+                    *id = term.clone();
+                }
+            }
+            Formula::Negation(f) => f.substitute(variable, term),
+            Formula::Predicate(p) => p.substitute(variable, term),
+            Formula::Comparison(c) => c.substitute(variable, term),
+            Formula::RuleLabel(_) => {}
         }
     }
 }
@@ -384,7 +539,7 @@ fn negation(input: &str) -> IResult<&str, Box<Formula>> {
 }
 
 /// A parser for a formula.
-fn formula(input: &str) -> IResult<&str, Formula> {
+pub fn formula(input: &str) -> IResult<&str, Formula> {
     alt((
         map(ws(rule_label), Formula::RuleLabel),
         map(ws(predicate), Formula::Predicate),
@@ -414,6 +569,23 @@ impl<T> Preference<T> {
             operator,
             right,
         }
+    }
+}
+
+impl FormulaLike for Preference<Formula> {
+    fn has_variables(&self) -> bool {
+        self.left.has_variables() || self.right.has_variables()
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        let mut variables = self.left.get_variables();
+        variables.extend(self.right.get_variables());
+        variables
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        self.left.substitute(variable, term);
+        self.right.substitute(variable, term);
     }
 }
 
@@ -521,6 +693,23 @@ impl fmt::Display for Contrary {
     }
 }
 
+impl FormulaLike for Contrary {
+    fn has_variables(&self) -> bool {
+        self.left.has_variables() || self.right.has_variables()
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        let mut variables = self.left.get_variables();
+        variables.extend(self.right.get_variables());
+        variables
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        self.left.substitute(variable, term);
+        self.right.substitute(variable, term);
+    }
+}
+
 fn contrary(input: &str) -> IResult<&str, Contrary> {
     let (input, left) = ws(delimited_formula)(input)?;
     let (input, operator) = ws(contrary_operator)(input)?;
@@ -551,6 +740,29 @@ impl Deref for Knowledge {
             Knowledge::Premise(f) => f,
             Knowledge::Axiom(f) => f,
         }
+    }
+}
+
+impl DerefMut for Knowledge {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Knowledge::Premise(f) => f,
+            Knowledge::Axiom(f) => f,
+        }
+    }
+}
+
+impl FormulaLike for Knowledge {
+    fn has_variables(&self) -> bool {
+        self.deref().has_variables()
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        self.deref().get_variables()
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        self.deref_mut().substitute(variable, term);
     }
 }
 
@@ -598,8 +810,36 @@ impl InferenceRule {
         self.kind == InferenceKind::Defeasible
     }
 
-    pub fn has_variables(&self) -> bool {
+    pub fn is_undercutter(&self) -> bool {
+        if let Formula::Negation(b) = &self.consequent {
+            if let Formula::RuleLabel(_) = (*b).as_ref() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl FormulaLike for InferenceRule {
+    fn has_variables(&self) -> bool {
         self.antecedents.iter().any(|a| a.has_variables()) || self.consequent.has_variables()
+    }
+
+    fn get_variables(&self) -> Vec<&Identifier> {
+        let mut variables = self
+            .antecedents
+            .iter()
+            .flat_map(FormulaLike::get_variables)
+            .collect::<Vec<_>>();
+        variables.extend(self.consequent.get_variables());
+        variables
+    }
+
+    fn substitute(&mut self, variable: &Identifier, term: &Identifier) {
+        self.antecedents
+            .iter_mut()
+            .for_each(|a| a.substitute(variable, term));
+        self.consequent.substitute(variable, term);
     }
 }
 
@@ -668,57 +908,34 @@ pub fn inference_rules(input: &str) -> ParsingResult<Vec<InferenceRule>> {
     all_consuming(ws(many0_inference_rules))(input).map(|(_, rules)| rules)
 }
 
-pub fn build_preference_graph<T>(prefs: Vec<Preference<T>>) -> PreferenceRelation<T>
-where
-    T: Eq + Clone + std::hash::Hash,
-{
-    let mut graph = PreferenceRelation::new();
-    let mut indices = HashMap::new();
-    for pref in prefs.into_iter() {
-        let left = indices
-            .entry(pref.left.clone())
-            .or_insert_with(|| graph.add_node(pref.left.clone()))
-            .clone();
-        let right = indices
-            .entry(pref.right.clone())
-            .or_insert_with(|| graph.add_node(pref.right.clone()))
-            .clone();
+#[cfg(test)]
+mod tests {
 
-        match pref.operator {
-            PreferenceOperator::Succeeds => {
-                graph.add_edge(left, right, ());
-            }
-            PreferenceOperator::Precedes => {
-                graph.add_edge(right, left, ());
-            }
-        }
+    use super::*;
+
+    #[test]
+    fn test_language_add_formula() {
+        let mut language = Language::default();
+        let formula = Formula::Proposition("p".into());
+
+        language.add_formula(&formula);
+        assert!(language.propositions.contains(&Identifier::from("p")));
     }
-    graph
-}
 
-pub fn build_contrary_graph(contraries: Vec<Contrary>) -> ContraryRelation {
-    let mut graph = ContraryRelation::new();
-    let mut indices = HashMap::new();
-    for contrary in contraries.into_iter() {
-        // handle case where formula already exists in graph
-        let left = indices
-            .entry(contrary.left.clone())
-            .or_insert_with(|| graph.add_node(contrary.left.clone()))
-            .clone();
-        let right = indices
-            .entry(contrary.right.clone())
-            .or_insert_with(|| graph.add_node(contrary.right.clone()))
-            .clone();
+    #[test]
+    fn test_language_from_system_description() {
+        let description = SystemDescription {
+            axioms: vec![Knowledge::Axiom(Formula::Proposition("p".into()))],
+            premises: vec![Knowledge::Premise(Formula::Proposition("q".into()))],
+            rules: vec![],
+            rule_preferences: Default::default(),
+            knowledge_preferences: Default::default(),
+            contraries: Default::default(),
+        };
 
-        match contrary.operator {
-            ContraryOperator::Contradiction => {
-                graph.add_edge(left, right, ());
-                graph.add_edge(right, left, ());
-            }
-            ContraryOperator::Contrary => {
-                graph.add_edge(left, right, ());
-            }
-        }
+        let language = Language::from(&description);
+
+        assert!(language.propositions.contains(&Identifier::from("p")));
+        assert!(language.propositions.contains(&Identifier::from("q")));
     }
-    graph
 }

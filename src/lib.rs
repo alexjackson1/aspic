@@ -1,10 +1,10 @@
 use thiserror::Error;
 
 mod core;
-mod parse;
+pub mod parse;
 
-pub use core::{ArgumentationFramework, StructuredArgument};
-pub use parse::SystemDescription;
+pub use core::{ArgumentationFramework, StructuredAF};
+pub use parse::{Formula, InferenceRule, Language, RuleLabel, SystemDescription};
 
 #[derive(Error, Debug)]
 pub enum AspicError {
@@ -18,11 +18,11 @@ pub enum AspicError {
     Custom(String),
 }
 
-pub fn generate_af(
-    description: SystemDescription,
-) -> Result<ArgumentationFramework<StructuredArgument>, AspicError> {
+pub fn generate_af(description: SystemDescription) -> Result<StructuredAF, AspicError> {
     let theory = core::Theory::try_from(description)?;
-    let framework = theory.generate_arguments()?;
+    let mut framework = theory.generate_arguments()?;
+    theory.calculate_attack(&mut framework)?;
+    println!("{:?}", theory);
     Ok(framework)
 }
 
@@ -56,6 +56,8 @@ mod tests {
             ",
         )
         .expect("Failed to parse input data");
-        generate_af(description).expect("Failed to generate argumentation framework");
+        let fw = generate_af(description).expect("Failed to generate argumentation framework");
+        println!("{:?}", fw);
+        println!("{}", fw);
     }
 }

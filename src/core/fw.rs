@@ -1,6 +1,10 @@
-use std::{collections::HashMap, fmt, ops};
+use std::{
+    collections::HashMap,
+    fmt,
+    ops::{self, Deref},
+};
 
-use petgraph::prelude::*;
+use petgraph::{prelude::*, visit::IntoEdgeReferences};
 
 /// A unique identifier for an argument.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -9,6 +13,14 @@ pub struct ArgumentId(pub usize);
 impl fmt::Display for ArgumentId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "A{}", self.0)
+    }
+}
+
+impl Deref for ArgumentId {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -57,22 +69,31 @@ pub trait Argument {
     fn id(&self) -> ArgumentId;
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AttackKind {
+    Undercut,
+    Rebut,
+    Undermine,
+}
+
 /// An argumentation framework.
 ///
 /// An argumentation framework is a directed graph where the nodes represent arguments
 /// and the edges represent attacks between arguments.
-#[derive(Clone, Debug)]
-pub struct ArgumentationFramework<Arg>
+#[derive(Debug, Clone)]
+pub struct ArgumentationFramework<Arg, Att = ()>
 where
     Arg: Argument,
+    Att: Clone,
 {
     pub arguments: HashMap<ArgumentId, Arg>,
-    pub attacks: DiGraphMap<ArgumentId, ()>,
+    pub attacks: DiGraphMap<ArgumentId, Att>,
 }
 
-impl<Arg> Default for ArgumentationFramework<Arg>
+impl<Arg, Att> Default for ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     fn default() -> Self {
         Self {
@@ -82,9 +103,41 @@ where
     }
 }
 
-impl<Arg> ArgumentationFramework<Arg>
+impl<Arg, Att> fmt::Display for ArgumentationFramework<Arg, Att>
+where
+    Arg: Argument + fmt::Display,
+    Att: Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "({{{}}}, {{{}}})",
+            self.arguments
+                .values()
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.attacks
+                .edge_references()
+                .map(|edge| {
+                    format!(
+                        "{} -> {}",
+                        self.arguments[&edge.source()].id(),
+                        self.arguments[&edge.target()].id()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+
+        Ok(())
+    }
+}
+
+impl<Arg, Att> ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     pub fn len(&self) -> usize {
         self.arguments.len()
@@ -92,9 +145,10 @@ where
 }
 
 // Implement IntoIterator for owned iteration
-impl<Arg> IntoIterator for ArgumentationFramework<Arg>
+impl<Arg, Att> IntoIterator for ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     type Item = (ArgumentId, Arg);
     type IntoIter = std::collections::hash_map::IntoIter<ArgumentId, Arg>;
@@ -105,9 +159,10 @@ where
 }
 
 // Implement IntoIterator for immutable reference iteration
-impl<'a, Arg> IntoIterator for &'a ArgumentationFramework<Arg>
+impl<'a, Arg, Att> IntoIterator for &'a ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     type Item = (&'a ArgumentId, &'a Arg);
     type IntoIter = std::collections::hash_map::Iter<'a, ArgumentId, Arg>;
@@ -118,9 +173,10 @@ where
 }
 
 // Implement IntoIterator for mutable reference iteration
-impl<'a, Arg> IntoIterator for &'a mut ArgumentationFramework<Arg>
+impl<'a, Arg, Att> IntoIterator for &'a mut ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     type Item = (&'a ArgumentId, &'a mut Arg);
     type IntoIter = std::collections::hash_map::IterMut<'a, ArgumentId, Arg>;
@@ -131,9 +187,10 @@ where
 }
 
 // Implement Index trait
-impl<Arg> ops::Index<ArgumentId> for ArgumentationFramework<Arg>
+impl<Arg, Att> ops::Index<ArgumentId> for ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     type Output = Arg;
 
@@ -145,9 +202,10 @@ where
 }
 
 // Implement IndexMut trait
-impl<Arg> ops::IndexMut<ArgumentId> for ArgumentationFramework<Arg>
+impl<Arg, Att> ops::IndexMut<ArgumentId> for ArgumentationFramework<Arg, Att>
 where
     Arg: Argument,
+    Att: Clone,
 {
     fn index_mut(&mut self, index: ArgumentId) -> &mut Self::Output {
         self.arguments
