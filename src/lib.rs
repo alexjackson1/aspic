@@ -3,8 +3,12 @@ use thiserror::Error;
 mod core;
 pub mod parse;
 
-pub use core::{ArgumentationFramework, StructuredAF};
+pub use nom;
+
+pub use core::{ArgumentationFramework, ICCMA23Serialize, StructuredAF, Theory};
 pub use parse::{Formula, InferenceRule, Language, RuleLabel, SystemDescription};
+
+use wasm_bindgen::prelude::*;
 
 #[derive(Error, Debug)]
 pub enum AspicError {
@@ -24,6 +28,13 @@ pub fn generate_af(description: SystemDescription) -> Result<StructuredAF, Aspic
     theory.calculate_attack(&mut framework)?;
     println!("{:?}", theory);
     Ok(framework)
+}
+
+#[wasm_bindgen]
+pub fn validate_axioms(axioms: &str) -> Option<String> {
+    parse::formula_set(axioms)
+        .map(|_| None)
+        .unwrap_or_else(|e| Some(format!("{}", e)))
 }
 
 #[cfg(test)]

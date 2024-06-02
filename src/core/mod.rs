@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, hash};
 
 use petgraph::graph::{DiGraph, NodeIndex};
 
@@ -9,22 +9,26 @@ mod theory;
 
 use crate::parse::{Formula, Preference, PreferenceOperator, RuleLabel};
 
-pub use fw::ArgumentationFramework;
+pub use fw::{ArgumentationFramework, ICCMA23Serialize};
 pub use structured::{ArgumentId, StructuredAF, StructuredArgument};
 pub use theory::Theory;
 
+#[cfg(feature = "serde_support")]
+use serde::{ser::SerializeStruct, Serialize, Serializer};
+
+#[cfg_attr(feature = "serde_support", derive(serde_derive::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct IndexedRelation<N, E = ()>
 where
-    N: Eq + std::hash::Hash,
+    N: Eq + hash::Hash + fmt::Display,
 {
-    pub graph: DiGraph<N, E>,
-    pub indices: HashMap<N, NodeIndex>,
+    graph: DiGraph<N, E>,
+    indices: HashMap<N, NodeIndex>,
 }
 
 impl<N, E> IndexedRelation<N, E>
 where
-    N: Eq + std::hash::Hash,
+    N: Eq + hash::Hash + fmt::Display,
 {
     pub fn new() -> Self {
         Self {
@@ -40,7 +44,7 @@ where
 
 impl<N> IndexedRelation<N>
 where
-    N: Eq + std::hash::Hash + Clone,
+    N: Eq + hash::Hash + Clone + fmt::Display,
 {
     pub fn insert_symmetric(&mut self, left: N, right: N) {
         let left_idx = self
@@ -81,6 +85,29 @@ where
     }
 }
 
+#[cfg(feature = "serde_support")]
+impl<N, E> Serialize for IndexedRelation<N, E>
+where
+    N: Eq + hash::Hash + fmt::Display + Serialize,
+    E: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("IndexedRelation", 2)?;
+        state.serialize_field("graph", &self.graph)?;
+        let indices_as_strings: HashMap<String, NodeIndex> = self
+            .indices
+            .iter()
+            .map(|(key, &value)| (key.to_string(), value))
+            .collect();
+        state.serialize_field("indices", &indices_as_strings)?;
+
+        state.end()
+    }
+}
+
 impl From<Vec<Preference<Formula>>> for IndexedRelation<Formula> {
     fn from(prefs: Vec<Preference<Formula>>) -> Self {
         build_preference_graph(prefs)
@@ -95,7 +122,7 @@ impl From<Vec<Preference<RuleLabel>>> for IndexedRelation<RuleLabel> {
 
 pub fn build_preference_graph<T>(prefs: Vec<Preference<T>>) -> IndexedRelation<T>
 where
-    T: Eq + Clone + std::hash::Hash,
+    T: Eq + Clone + hash::Hash + fmt::Display,
 {
     let mut relation = IndexedRelation::new();
     for pref in prefs.into_iter() {

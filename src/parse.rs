@@ -10,19 +10,23 @@ use nom::{
     bytes::complete::tag,
     character::complete::{alpha1, alphanumeric1, multispace0},
     combinator::{all_consuming, map},
-    error::ParseError,
+    error::{context, ParseError, VerboseError},
     multi::{many0, separated_list0},
     sequence::delimited,
     IResult,
 };
 
-pub type ParsingResult<'a, T> = std::result::Result<T, nom::Err<nom::error::Error<&'a str>>>;
+#[cfg(feature = "serde_support")]
+use serde_derive::{Deserialize, Serialize};
+
+pub type ParsingResult<'a, T> = std::result::Result<T, nom::Err<VerboseError<&'a str>>>;
 
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Language {
     pub terms: HashSet<Identifier>,
     pub variables: HashSet<Identifier>,
-    pub predicates: HashSet<Identifier>,
+    pub predicates: HashSet<(Identifier, usize)>,
     pub propositions: HashSet<Identifier>,
     pub labels: HashSet<RuleLabel>,
 }
@@ -37,7 +41,7 @@ impl Language {
                 self.add_formula(f);
             }
             Formula::Predicate(p) => {
-                self.predicates.insert(p.name.clone());
+                self.predicates.insert((p.name.clone(), p.terms.len()));
                 for ident in p.terms.iter() {
                     if ident.is_variable() {
                         self.variables.insert(ident.clone());
@@ -63,6 +67,7 @@ impl Language {
 }
 
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct SystemDescription {
     pub axioms: Vec<Knowledge>,
     pub premises: Vec<Knowledge>,
@@ -144,6 +149,7 @@ where
 
 /// The symbol used to denote a kind of inference.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum InferenceKind {
     Strict,
     Defeasible,
@@ -159,7 +165,7 @@ impl fmt::Display for InferenceKind {
 }
 
 /// A parser for an inference kind.
-fn inference_kind(input: &str) -> IResult<&str, InferenceKind> {
+fn inference_kind(input: &str) -> IResult<&str, InferenceKind, VerboseError<&str>> {
     let (input, kind) = alt((tag("->"), tag("=>")))(input)?;
     match kind {
         "->" => Ok((input, InferenceKind::Strict)),
@@ -170,6 +176,7 @@ fn inference_kind(input: &str) -> IResult<&str, InferenceKind> {
 
 /// The symbol used to denote a comparison relation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum ComparisonOperator {
     Equal,
     NotEqual,
@@ -185,7 +192,7 @@ impl fmt::Display for ComparisonOperator {
 }
 
 /// A parser for a comparison operator.
-fn comparison_operator(input: &str) -> IResult<&str, ComparisonOperator> {
+fn comparison_operator(input: &str) -> IResult<&str, ComparisonOperator, VerboseError<&str>> {
     let (input, operator) = alt((tag("=="), tag("!=")))(input)?;
     match operator {
         "==" => Ok((input, ComparisonOperator::Equal)),
@@ -196,6 +203,7 @@ fn comparison_operator(input: &str) -> IResult<&str, ComparisonOperator> {
 
 /// The symbol used to denote a preference relation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum PreferenceOperator {
     Succeeds,
     Precedes,
@@ -211,7 +219,7 @@ impl fmt::Display for PreferenceOperator {
 }
 
 /// A parser for a preference operator.
-fn preference_operator(input: &str) -> IResult<&str, PreferenceOperator> {
+fn preference_operator(input: &str) -> IResult<&str, PreferenceOperator, VerboseError<&str>> {
     let (input, operator) = alt((tag(">"), tag("<")))(input)?;
     match operator {
         ">" => Ok((input, PreferenceOperator::Succeeds)),
@@ -222,13 +230,14 @@ fn preference_operator(input: &str) -> IResult<&str, PreferenceOperator> {
 
 /// The symbol used to denote a contrary relation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum ContraryOperator {
     Contrary,
     Contradiction,
 }
 
 /// A parser for a contrary operator.
-fn contrary_operator(input: &str) -> IResult<&str, ContraryOperator> {
+fn contrary_operator(input: &str) -> IResult<&str, ContraryOperator, VerboseError<&str>> {
     let (input, operator) = alt((tag("^"), tag("-")))(input)?;
     match operator {
         "^" => Ok((input, ContraryOperator::Contrary)),
@@ -239,6 +248,7 @@ fn contrary_operator(input: &str) -> IResult<&str, ContraryOperator> {
 
 /// A unique string identifier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Identifier(pub String);
 
 impl Identifier {
@@ -272,7 +282,7 @@ impl Deref for Identifier {
 }
 
 /// A parser for an identifier.
-fn identifier(input: &str) -> IResult<&str, Identifier> {
+fn identifier(input: &str) -> IResult<&str, Identifier, VerboseError<&str>> {
     let (input, first) = alt((alpha1, tag("_")))(input)?;
     let (input, rest) = many0(alt((alphanumeric1, tag("_"))))(input)?;
     let label = format!("{}{}", first, rest.join(""));
@@ -281,6 +291,7 @@ fn identifier(input: &str) -> IResult<&str, Identifier> {
 
 /// A label for a rule.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct RuleLabel(pub Identifier);
 
 impl fmt::Display for RuleLabel {
@@ -298,7 +309,7 @@ impl Deref for RuleLabel {
 }
 
 /// A parser for a rule label.
-fn rule_label(input: &str) -> IResult<&str, RuleLabel> {
+fn rule_label(input: &str) -> IResult<&str, RuleLabel, VerboseError<&str>> {
     map(delimited(tag("["), ws(identifier), tag("]")), RuleLabel)(input)
 }
 
@@ -316,6 +327,7 @@ pub trait FormulaLike {
 
 /// A predicate with a name and a list of terms.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Predicate {
     pub name: Identifier,
     pub terms: Vec<Identifier>,
@@ -367,19 +379,18 @@ impl fmt::Display for Predicate {
 }
 
 /// A parser for a term.
-fn term(input: &str) -> IResult<&str, Identifier> {
+fn term(input: &str) -> IResult<&str, Identifier, VerboseError<&str>> {
     let (input, identifier) = identifier(input)?;
     match identifier.is_variable() {
         false => Ok((input, identifier)),
-        true => Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Alpha,
-        ))),
+        true => Err(nom::Err::Error(VerboseError {
+            errors: vec![(input, nom::error::VerboseErrorKind::Context("term"))],
+        })),
     }
 }
 
 /// A parser for a predicate.
-fn predicate(input: &str) -> IResult<&str, Predicate> {
+fn predicate(input: &str) -> IResult<&str, Predicate, VerboseError<&str>> {
     let (input, name) = ws(term)(input)?;
     let (input, arguments) = delimited(
         tag("("),
@@ -391,6 +402,7 @@ fn predicate(input: &str) -> IResult<&str, Predicate> {
 
 /// A comparison between two identifiers.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Comparison {
     pub left: Box<Identifier>,
     pub operator: ComparisonOperator,
@@ -466,7 +478,7 @@ impl PartialOrd for Comparison {
 }
 
 /// A parser for a comparison.
-fn comparison(input: &str) -> IResult<&str, Comparison> {
+fn comparison(input: &str) -> IResult<&str, Comparison, VerboseError<&str>> {
     let (input, left) = ws(identifier)(input)?;
     let (input, operator) = ws(comparison_operator)(input)?;
     let (input, right) = ws(identifier)(input)?;
@@ -475,6 +487,7 @@ fn comparison(input: &str) -> IResult<&str, Comparison> {
 
 /// A logical formula.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Formula {
     Proposition(Identifier),
     Negation(Box<Formula>),
@@ -532,30 +545,34 @@ impl fmt::Display for Formula {
 }
 
 /// A parser for a negation.
-fn negation(input: &str) -> IResult<&str, Box<Formula>> {
+fn negation(input: &str) -> IResult<&str, Box<Formula>, VerboseError<&str>> {
     let (input, _) = tag("~")(input)?;
     let (input, formula) = ws(delimited_formula)(input)?;
     Ok((input, Box::new(formula)))
 }
 
 /// A parser for a formula.
-pub fn formula(input: &str) -> IResult<&str, Formula> {
-    alt((
-        map(ws(rule_label), Formula::RuleLabel),
-        map(ws(predicate), Formula::Predicate),
-        map(ws(negation), Formula::Negation),
-        map(ws(comparison), Formula::Comparison),
-        map(ws(term), Formula::Proposition),
-    ))(input)
+pub fn formula(input: &str) -> IResult<&str, Formula, VerboseError<&str>> {
+    context(
+        "formula",
+        alt((
+            map(ws(rule_label), Formula::RuleLabel),
+            map(ws(predicate), Formula::Predicate),
+            map(ws(negation), Formula::Negation),
+            map(ws(comparison), Formula::Comparison),
+            map(ws(term), Formula::Proposition),
+        )),
+    )(input)
 }
 
 /// A parser for a delimited formula.
-fn delimited_formula(input: &str) -> IResult<&str, Formula> {
+fn delimited_formula(input: &str) -> IResult<&str, Formula, VerboseError<&str>> {
     alt((formula, delimited(tag("("), formula, tag(")"))))(input)
 }
 
 /// A preference relation between two items.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Preference<T> {
     pub left: T,
     pub operator: PreferenceOperator,
@@ -589,7 +606,7 @@ impl FormulaLike for Preference<Formula> {
     }
 }
 
-fn rule_preference(input: &str) -> IResult<&str, Preference<RuleLabel>> {
+fn rule_preference(input: &str) -> IResult<&str, Preference<RuleLabel>, VerboseError<&str>> {
     let (input, label) = ws(rule_label)(input)?;
     let (input, operator) = ws(preference_operator)(input)?;
     let (input, other) = ws(rule_label)(input)?;
@@ -597,7 +614,9 @@ fn rule_preference(input: &str) -> IResult<&str, Preference<RuleLabel>> {
     Ok((input, Preference::new(label, operator, other)))
 }
 
-fn many0_rule_preferences(input: &str) -> IResult<&str, Vec<Preference<RuleLabel>>> {
+fn many0_rule_preferences(
+    input: &str,
+) -> IResult<&str, Vec<Preference<RuleLabel>>, VerboseError<&str>> {
     many0(ws(rule_preference))(input)
 }
 
@@ -605,7 +624,7 @@ pub fn rule_preferences(input: &str) -> ParsingResult<Vec<Preference<RuleLabel>>
     all_consuming(ws(many0_rule_preferences))(input).map(|(_, preferences)| preferences)
 }
 
-fn knowledge_preference(input: &str) -> IResult<&str, Preference<Formula>> {
+fn knowledge_preference(input: &str) -> IResult<&str, Preference<Formula>, VerboseError<&str>> {
     let (input, left) = ws(delimited_formula)(input)?;
     let (input, operator) = ws(preference_operator)(input)?;
     let (input, right) = ws(delimited_formula)(input)?;
@@ -613,7 +632,9 @@ fn knowledge_preference(input: &str) -> IResult<&str, Preference<Formula>> {
     Ok((input, Preference::new(left, operator, right)))
 }
 
-fn many0_knowledge_preferences(input: &str) -> IResult<&str, Vec<Preference<Formula>>> {
+fn many0_knowledge_preferences(
+    input: &str,
+) -> IResult<&str, Vec<Preference<Formula>>, VerboseError<&str>> {
     many0(ws(knowledge_preference))(input)
 }
 
@@ -623,6 +644,7 @@ pub fn knowledge_preferences(input: &str) -> ParsingResult<Vec<Preference<Formul
 
 /// A contrary relation between two formulas.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Contrary {
     pub left: Formula,
     pub operator: ContraryOperator,
@@ -710,7 +732,7 @@ impl FormulaLike for Contrary {
     }
 }
 
-fn contrary(input: &str) -> IResult<&str, Contrary> {
+fn contrary(input: &str) -> IResult<&str, Contrary, VerboseError<&str>> {
     let (input, left) = ws(delimited_formula)(input)?;
     let (input, operator) = ws(contrary_operator)(input)?;
     let (input, right) = ws(delimited_formula)(input)?;
@@ -718,7 +740,7 @@ fn contrary(input: &str) -> IResult<&str, Contrary> {
     Ok((input, Contrary::new(left, operator, right)))
 }
 
-fn many0_contraries(input: &str) -> IResult<&str, Vec<Contrary>> {
+fn many0_contraries(input: &str) -> IResult<&str, Vec<Contrary>, VerboseError<&str>> {
     many0(ws(contrary))(input)
 }
 pub fn contraries(input: &str) -> ParsingResult<Vec<Contrary>> {
@@ -727,6 +749,7 @@ pub fn contraries(input: &str) -> ParsingResult<Vec<Contrary>> {
 
 /// A piece of knowledge.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Knowledge {
     Premise(Formula),
     Axiom(Formula),
@@ -767,7 +790,7 @@ impl FormulaLike for Knowledge {
 }
 
 /// A parser for a list of formulas.
-fn separated_formula_list(input: &str) -> IResult<&str, Vec<Formula>> {
+fn separated_formula_list(input: &str) -> IResult<&str, Vec<Formula>, VerboseError<&str>> {
     let (input, formulae) = separated_list0(ws(tag(";")), ws(delimited_formula))(input)?;
     if !formulae.is_empty() {
         let (input, _) = ws(tag(";"))(input)?;
@@ -784,6 +807,7 @@ pub fn formula_set(input: &str) -> ParsingResult<Vec<Formula>> {
 
 /// An inference rule.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct InferenceRule {
     pub label: RuleLabel,
     pub antecedents: Vec<Formula>,
@@ -885,7 +909,7 @@ impl fmt::Display for InferenceRule {
 }
 
 /// A parser for an inference rule.
-fn inference_rule(input: &str) -> IResult<&str, InferenceRule> {
+fn inference_rule(input: &str) -> IResult<&str, InferenceRule, VerboseError<&str>> {
     let (input, label) = ws(rule_label)(input)?;
     let (input, _) = ws(tag(":"))(input)?;
     let (input, antecedents) = separated_list0(tag(","), ws(delimited_formula))(input)?;
@@ -899,7 +923,7 @@ fn inference_rule(input: &str) -> IResult<&str, InferenceRule> {
 }
 
 /// A parser for a list of inference rules.
-fn many0_inference_rules(input: &str) -> IResult<&str, Vec<InferenceRule>> {
+fn many0_inference_rules(input: &str) -> IResult<&str, Vec<InferenceRule>, VerboseError<&str>> {
     many0(ws(inference_rule))(input)
 }
 

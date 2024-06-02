@@ -17,6 +17,10 @@ use super::{
 };
 
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde_derive::Serialize, serde_derive::Deserialize)
+)]
 pub struct System {
     pub language: Language,
     pub inference_rules: Vec<InferenceRule>,
@@ -26,6 +30,10 @@ pub struct System {
 }
 
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde_derive::Serialize, serde_derive::Deserialize)
+)]
 pub struct Theory {
     pub system: System,
     pub knowledge: Vec<Knowledge>,

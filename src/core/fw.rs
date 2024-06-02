@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fmt,
     ops::{self, Deref},
 };
@@ -8,6 +8,10 @@ use petgraph::{prelude::*, visit::IntoEdgeReferences};
 
 /// A unique identifier for an argument.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde_derive::Serialize, serde_derive::Deserialize)
+)]
 pub struct ArgumentId(pub usize);
 
 impl fmt::Display for ArgumentId {
@@ -69,24 +73,21 @@ pub trait Argument {
     fn id(&self) -> ArgumentId;
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AttackKind {
-    Undercut,
-    Rebut,
-    Undermine,
-}
-
 /// An argumentation framework.
 ///
 /// An argumentation framework is a directed graph where the nodes represent arguments
 /// and the edges represent attacks between arguments.
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde_derive::Serialize, serde_derive::Deserialize)
+)]
 pub struct ArgumentationFramework<Arg, Att = ()>
 where
     Arg: Argument,
     Att: Clone,
 {
-    pub arguments: HashMap<ArgumentId, Arg>,
+    pub arguments: BTreeMap<ArgumentId, Arg>,
     pub attacks: DiGraphMap<ArgumentId, Att>,
 }
 
@@ -97,7 +98,7 @@ where
 {
     fn default() -> Self {
         Self {
-            arguments: HashMap::new(),
+            arguments: BTreeMap::new(),
             attacks: DiGraphMap::new(),
         }
     }
@@ -151,7 +152,7 @@ where
     Att: Clone,
 {
     type Item = (ArgumentId, Arg);
-    type IntoIter = std::collections::hash_map::IntoIter<ArgumentId, Arg>;
+    type IntoIter = std::collections::btree_map::IntoIter<ArgumentId, Arg>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.arguments.into_iter()
@@ -165,7 +166,7 @@ where
     Att: Clone,
 {
     type Item = (&'a ArgumentId, &'a Arg);
-    type IntoIter = std::collections::hash_map::Iter<'a, ArgumentId, Arg>;
+    type IntoIter = std::collections::btree_map::Iter<'a, ArgumentId, Arg>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.arguments.iter()
@@ -179,7 +180,7 @@ where
     Att: Clone,
 {
     type Item = (&'a ArgumentId, &'a mut Arg);
-    type IntoIter = std::collections::hash_map::IterMut<'a, ArgumentId, Arg>;
+    type IntoIter = std::collections::btree_map::IterMut<'a, ArgumentId, Arg>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.arguments.iter_mut()
@@ -212,4 +213,8 @@ where
             .get_mut(&index)
             .expect("No argument found for the given ID")
     }
+}
+
+pub trait ICCMA23Serialize {
+    fn to_iccma23(&self) -> String;
 }

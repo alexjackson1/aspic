@@ -6,10 +6,37 @@ use std::{
 
 use crate::parse::{Formula, Identifier, InferenceRule, Predicate, RuleLabel};
 
-use super::fw;
-pub use fw::{Argument, ArgumentId, ArgumentationFramework, AttackKind};
+use super::fw::{self, ICCMA23Serialize};
+pub use fw::{Argument, ArgumentId, ArgumentationFramework};
 
-pub type StructuredAF = ArgumentationFramework<StructuredArgument, AttackKind>;
+use petgraph::visit::IntoEdgeReferences;
+
+#[cfg(feature = "serde_support")]
+use serde_derive::{Deserialize, Serialize};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+pub enum AttackKind {
+    Undercut,
+    Rebut,
+    Undermine,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+pub struct Attack(AttackKind, bool);
+
+impl Attack {
+    pub fn kind(&self) -> AttackKind {
+        self.0
+    }
+
+    pub fn success(&self) -> bool {
+        self.1
+    }
+}
+
+pub type StructuredAF = ArgumentationFramework<StructuredArgument, Attack>;
 
 pub type VariableMap = HashMap<Identifier, Identifier>; // Variable -> Term
 
@@ -22,6 +49,7 @@ pub trait Structured {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde_support", derive(Deserialize, Serialize))]
 pub struct StructuredArgument {
     pub id: ArgumentId,
     pub sub_args: HashSet<ArgumentId>,
@@ -242,15 +270,18 @@ impl StructuredAF {
     }
 
     pub fn add_rebuttal(&mut self, arg1: ArgumentId, arg2: ArgumentId) {
-        self.attacks.add_edge(arg1, arg2, AttackKind::Rebut);
+        self.attacks
+            .add_edge(arg1, arg2, Attack(AttackKind::Rebut, true));
     }
 
     pub fn add_undercut(&mut self, arg1: ArgumentId, arg2: ArgumentId) {
-        self.attacks.add_edge(arg1, arg2, AttackKind::Undercut);
+        self.attacks
+            .add_edge(arg1, arg2, Attack(AttackKind::Undercut, true));
     }
 
     pub fn add_undermine(&mut self, arg1: ArgumentId, arg2: ArgumentId) {
-        self.attacks.add_edge(arg1, arg2, AttackKind::Undermine);
+        self.attacks
+            .add_edge(arg1, arg2, Attack(AttackKind::Undermine, true));
     }
 }
 
@@ -297,6 +328,18 @@ fn find_term_assignment<'a>(
             None => Some(Some((term_1.clone(), term_2.clone()))),
         },
         _ => None,
+    }
+}
+
+impl ICCMA23Serialize for StructuredAF {
+    fn to_iccma23(&self) -> String {
+        let mut s = format!("p af {}\n", self.arguments.len());
+        for (a1, a2, att) in self.attacks.edge_references() {
+            if att.success() {
+                s.push_str(&format!("{} {}\n", a1.0, a2.0));
+            }
+        }
+        s
     }
 }
 
