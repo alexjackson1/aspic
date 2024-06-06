@@ -4,6 +4,7 @@ mod core;
 pub mod parse;
 
 pub use nom;
+use wasm_bindgen_futures::{future_to_promise, js_sys};
 
 pub use core::{ArgumentationFramework, ICCMA23Serialize, StructuredAF, Theory};
 pub use parse::{Formula, InferenceRule, Language, RuleLabel, SystemDescription};
@@ -31,10 +32,117 @@ pub fn generate_af(description: SystemDescription) -> Result<StructuredAF, Aspic
 }
 
 #[wasm_bindgen]
-pub fn validate_axioms(axioms: &str) -> Option<String> {
-    parse::formula_set(axioms)
-        .map(|_| None)
-        .unwrap_or_else(|e| Some(format!("{}", e)))
+pub fn validate_axioms(axioms: &str) -> js_sys::Promise {
+    let axioms = axioms.to_string();
+    let future = async move {
+        let result = parse::formula_set(&axioms)
+            .map(|_| None)
+            .unwrap_or_else(|e| Some(format!("{}", e)));
+
+        let js_result = match result {
+            Some(err) => JsValue::from_str(&err),
+            None => JsValue::UNDEFINED,
+        };
+
+        Ok(js_result)
+    };
+
+    future_to_promise(future)
+}
+
+#[wasm_bindgen]
+pub fn validate_premises(premises: &str) -> js_sys::Promise {
+    let premises = premises.to_string();
+    let future = async move {
+        let result = parse::formula_set(&premises)
+            .map(|_| None)
+            .unwrap_or_else(|e| Some(format!("{}", e)));
+
+        let js_result = match result {
+            Some(err) => JsValue::from_str(&err),
+            None => JsValue::UNDEFINED,
+        };
+
+        Ok(js_result)
+    };
+
+    future_to_promise(future)
+}
+
+#[wasm_bindgen]
+pub fn validate_inference_rules(rules: &str) -> js_sys::Promise {
+    let rules = rules.to_string();
+    let future = async move {
+        let result = parse::inference_rules(&rules)
+            .map(|_| None)
+            .unwrap_or_else(|e| Some(format!("{}", e)));
+
+        let js_result = match result {
+            Some(err) => JsValue::from_str(&err),
+            None => JsValue::UNDEFINED,
+        };
+
+        Ok(js_result)
+    };
+
+    future_to_promise(future)
+}
+
+#[wasm_bindgen]
+pub fn validate_rule_preferences(prefs: &str) -> js_sys::Promise {
+    let prefs = prefs.to_string();
+    let future = async move {
+        let result = parse::rule_preferences(&prefs)
+            .map(|_| None)
+            .unwrap_or_else(|e| Some(format!("{}", e)));
+
+        let js_result = match result {
+            Some(err) => JsValue::from_str(&err),
+            None => JsValue::UNDEFINED,
+        };
+
+        Ok(js_result)
+    };
+
+    future_to_promise(future)
+}
+
+#[wasm_bindgen]
+pub fn validate_contraries(contraries: &str) -> js_sys::Promise {
+    let contraries = contraries.to_string();
+    let future = async move {
+        let result = parse::contraries(&contraries)
+            .map(|_| None)
+            .unwrap_or_else(|e| Some(format!("{}", e)));
+
+        let js_result = match result {
+            Some(err) => JsValue::from_str(&err),
+            None => JsValue::UNDEFINED,
+        };
+
+        Ok(js_result)
+    };
+
+    future_to_promise(future)
+}
+
+#[wasm_bindgen]
+pub fn validate_knowledge_preferences(prefs: &str) -> js_sys::Promise {
+    let prefs = prefs.to_string();
+    let future = async move {
+        let result = parse::knowledge_preferences(&prefs)
+            .map(|_| None)
+            .unwrap_or_else(|e| Some(format!("{}", e)));
+
+        let js_result = match result {
+            Some(err) => JsValue::from_str(&err),
+            None => JsValue::UNDEFINED,
+        };
+
+        Ok(js_result)
+    };
+
+    future_to_promise(future)
 }
 
 #[cfg(test)]

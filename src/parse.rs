@@ -567,7 +567,10 @@ pub fn formula(input: &str) -> IResult<&str, Formula, VerboseError<&str>> {
 
 /// A parser for a delimited formula.
 fn delimited_formula(input: &str) -> IResult<&str, Formula, VerboseError<&str>> {
-    alt((formula, delimited(tag("("), formula, tag(")"))))(input)
+    context(
+        "formula",
+        alt((formula, delimited(tag("("), formula, tag(")")))),
+    )(input)
 }
 
 /// A preference relation between two items.
@@ -791,7 +794,10 @@ impl FormulaLike for Knowledge {
 
 /// A parser for a list of formulas.
 fn separated_formula_list(input: &str) -> IResult<&str, Vec<Formula>, VerboseError<&str>> {
-    let (input, formulae) = separated_list0(ws(tag(";")), ws(delimited_formula))(input)?;
+    let (input, formulae) = context(
+        "separated_list",
+        separated_list0(ws(tag(";")), ws(delimited_formula)),
+    )(input)?;
     if !formulae.is_empty() {
         let (input, _) = ws(tag(";"))(input)?;
         Ok((input, formulae))
@@ -802,7 +808,8 @@ fn separated_formula_list(input: &str) -> IResult<&str, Vec<Formula>, VerboseErr
 
 /// An all-consuming parser for a list of formulas.
 pub fn formula_set(input: &str) -> ParsingResult<Vec<Formula>> {
-    all_consuming(ws(separated_formula_list))(input).map(|(_, formulae)| formulae)
+    context("formula_set", all_consuming(ws(separated_formula_list)))(input)
+        .map(|(_, formulae)| formulae)
 }
 
 /// An inference rule.
