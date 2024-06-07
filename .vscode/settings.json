@@ -1,5 +1,6 @@
 {
   "rust-analyzer.check.features": [
-    "serde_support"
+    "serde_support",
+    "wasm"
   ]
 }

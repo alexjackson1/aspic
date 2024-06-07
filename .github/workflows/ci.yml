@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Build and test
+      run: cargo test
+
+    - name: Build and upload to crates.io
+      run: |
+        cargo build --release --features serde_support,wasm
+        cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+    - name: Set up wasm-pack
+      run: |
+        curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+    - name: Build with wasm-pack
+      run: wasm-pack build --target bundler --features serde_support,wasm
+
+    - name: Upload WASM pkg
+      uses: actions/upload-artifact@v2
+      with:
+        name: wasm
+        path: pkg/

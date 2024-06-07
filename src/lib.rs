@@ -1,15 +1,17 @@
 use thiserror::Error;
 
+pub use nom;
+
 mod core;
 pub mod parse;
-
-pub use nom;
-use wasm_bindgen_futures::{future_to_promise, js_sys};
 
 pub use core::{ArgumentationFramework, ICCMA23Serialize, StructuredAF, Theory};
 pub use parse::{Formula, InferenceRule, Language, RuleLabel, SystemDescription};
 
+#[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
+#[cfg(feature = "wasm")]
+use wasm_bindgen_futures::{future_to_promise, js_sys};
 
 #[derive(Error, Debug)]
 pub enum AspicError {
@@ -31,6 +33,7 @@ pub fn generate_af(description: SystemDescription) -> Result<StructuredAF, Aspic
     Ok(framework)
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn validate_axioms(axioms: &str) -> js_sys::Promise {
     let axioms = axioms.to_string();
@@ -50,6 +53,7 @@ pub fn validate_axioms(axioms: &str) -> js_sys::Promise {
     future_to_promise(future)
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn validate_premises(premises: &str) -> js_sys::Promise {
     let premises = premises.to_string();
@@ -69,6 +73,7 @@ pub fn validate_premises(premises: &str) -> js_sys::Promise {
     future_to_promise(future)
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn validate_inference_rules(rules: &str) -> js_sys::Promise {
     let rules = rules.to_string();
@@ -88,6 +93,7 @@ pub fn validate_inference_rules(rules: &str) -> js_sys::Promise {
     future_to_promise(future)
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn validate_rule_preferences(prefs: &str) -> js_sys::Promise {
     let prefs = prefs.to_string();
@@ -107,6 +113,7 @@ pub fn validate_rule_preferences(prefs: &str) -> js_sys::Promise {
     future_to_promise(future)
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn validate_contraries(contraries: &str) -> js_sys::Promise {
     let contraries = contraries.to_string();
@@ -126,6 +133,7 @@ pub fn validate_contraries(contraries: &str) -> js_sys::Promise {
     future_to_promise(future)
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn validate_knowledge_preferences(prefs: &str) -> js_sys::Promise {
     let prefs = prefs.to_string();
