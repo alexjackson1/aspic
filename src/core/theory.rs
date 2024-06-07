@@ -282,9 +282,9 @@ impl Theory {
         framework: &StructuredAF,
         ordering: Ordering,
     ) -> Result<IndexedRelation<ArgumentId>, AspicError> {
-        let mut preference_relation = IndexedRelation::new();
+        let preference_relation = IndexedRelation::new();
 
-        for (arg_1, arg_2) in framework.arguments.values().tuple_combinations() {
+        for (_arg_1, _arg_2) in framework.arguments.values().tuple_combinations() {
             match ordering {
                 Ordering::WeakestLink => {
                     unimplemented!()
